@@ -1,56 +1,73 @@
 <?php
-include 'includes/db.php'; // Ensure this points to your DB connection file
+// htdocs/GEO_INTRUDER/api_heartbeat.php
+header("Content-Type: application/json");
 
-// Check if the device is sending its MAC address
-if (isset($_POST['mac'])) {
-    $mac = mysqli_real_escape_string($conn, $_POST['mac']);
-    $current_bssid = isset($_POST['bssid']) ? mysqli_real_escape_string($conn, $_POST['bssid']) : "NULL";
+// Suppress raw HTML error output to protect the Python parser pipelines
+error_reporting(0);
+ini_set('display_errors', 0);
 
-    // 1. Fetch device details from the database
-    $query = "SELECT * FROM protected_devices WHERE mac_address = '$mac'";
-    $result = mysqli_query($conn, $query);
+// Use a strict, non-relative anchor root path to find your DB configuration safely
+$db_file = __DIR__ . '/includes/db.php';
 
-    if ($row = mysqli_fetch_assoc($result)) {
-        // 2. ALTERNATIVE BSSID LOGIC
-        // Turn the comma-separated list into an array
-        $allowed_bssids = explode(',', str_replace(' ', '', $row['authorized_bssid']));
-        
-        // Check if the current BSSID is in the allowed list
-        if ($current_bssid !== "NULL" && in_array($current_bssid, $allowed_bssids)) {
-            $new_status = 'SECURE';
+if (!file_exists($db_file)) {
+    echo json_encode(["status" => "error", "message" => "Critical Path Failure: includes/db.php not found at expected node location."]);
+    exit();
+}
+
+include $db_file;
+
+if (!isset($conn) || !$conn) {
+    echo json_encode(["status" => "error", "message" => "Database link channel configuration drop structural fault."]);
+    exit();
+}
+
+// Read incoming tracking parameters
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['mac_address']) && isset($_POST['current_bssid'])) {
+    
+    $mac = mysqli_real_escape_string($conn, $_POST['mac_address']);
+    $current_bssid = mysqli_real_escape_string($conn, $_POST['current_bssid']);
+
+    // Query your exact table schema target: protected_devices
+    $check_query = "SELECT * FROM protected_devices WHERE mac_address = '$mac'";
+    $result = mysqli_query($conn, $check_query);
+
+    if ($result && mysqli_num_rows($result) > 0) {
+        $device = mysqli_fetch_assoc($result);
+        $authorized_bssid = $device['authorized_bssid'];
+
+        // Evaluate location bounds signature integrity
+        if (strcasecmp($current_bssid, $authorized_bssid) === 0) {
+            mysqli_query($conn, "UPDATE protected_devices SET status = 'SECURE', last_message = 'Heartbeat clear.' WHERE mac_address = '$mac'");
+            echo json_encode(["status" => "secure", "message" => "Device verify success. Baseline tracking structural integrity maintained."]);
         } else {
-            $new_status = 'BREACHED';
-        }
-
-        // 3. UPDATE MAIN STATUS
-        mysqli_query($conn, "UPDATE protected_devices SET status='$new_status', last_check_in=NOW() WHERE mac_address='$mac'");
-
-        // 4. FORENSIC LOGGING (Requirement: Logging out the BSSID)
-        mysqli_query($conn, "INSERT INTO security_logs (device_mac, bssid_detected, status_at_time) 
-                            VALUES ('$mac', '$current_bssid', '$new_status')");
-
-        // 5. CAMERA MONITORING (Handle Image Upload)
-        if ($new_status == 'BREACHED' && isset($_FILES['evidence'])) {
-            $target_dir = "alerts/";
-            $file_extension = pathinfo($_FILES["evidence"]["name"], PATHINFO_EXTENSION);
-            $new_filename = $mac . "_" . time() . "." . $file_extension;
-            $target_file = $target_dir . $new_filename;
-
-            if (move_uploaded_file($_FILES["evidence"]["tmp_name"], $target_file)) {
-                // Save the image path to the evidence table
-                mysqli_query($conn, "INSERT INTO security_evidence (device_mac, image_path) 
-                                    VALUES ('$mac', '$new_filename')");
+            mysqli_query($conn, "UPDATE protected_devices SET status = 'BREACHED', last_message = 'Geofence Boundary Broken!' WHERE mac_address = '$mac'");
+            
+            // Check for incoming security camera payload uploads
+            if (isset($_FILES['intruder_img'])) {
+                $target_dir = "alerts/";
                 
-                // Note: This is where you would call your Email Function to send the photo
-                // sendAlertEmail($row['admin_email'], $target_file);
+                // Safety checkpoint: Ensure folder array structural node target element layout is online
+                if (!file_exists($target_dir)) {
+                    mkdir($target_dir, 0777, true);
+                }
+                
+                $file_name = "breach_" . time() . "_" . uniqid() . ".jpg";
+                $target_file = $target_dir . $file_name;
+                
+                if (move_uploaded_file($_FILES['intruder_img']['tmp_name'], $target_file)) {
+                    $log_query = "INSERT INTO security_evidence (device_mac, image_path, capture_time) VALUES ('$mac', '$file_name', NOW())";
+                    mysqli_query($conn, $log_query);
+                }
             }
+            
+            echo json_encode(["status" => "breach", "message" => "CRITICAL: Geofence violation tracking threshold triggered! Deploying countermeasure capture loops."]);
         }
-
-        echo "SUCCESS: " . $new_status;
     } else {
-        echo "ERROR: Device not enrolled.";
+        echo json_encode(["status" => "unregistered", "message" => "Device signature fingerprint target matching constraints failed. Enroll machine inside management console panel."]);
     }
 } else {
-    echo "ERROR: Missing parameters.";
+    echo json_encode(["status" => "error", "message" => "Invalid communication request constraints or parameter layout validation drop."]);
 }
+
+mysqli_close($conn);
 ?>
